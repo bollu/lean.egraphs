@@ -63,7 +63,7 @@ struct Eclass {
     if (!parentTerms.size()) {
       printf(" }");
       return;
-    } 
+    }
     printf(" | parentTerms ");
     for(auto tm_and_class : parentTerms) {
       printf(", ");
@@ -80,13 +80,14 @@ private:
 
 struct Egraph {
   map<Term, Eclass *> term2class;
-  
+
   Eclass *canonicalizeClass(Eclass *cls) const {
+    assert(cls);
     if (cls->ufparent == cls) { return cls; }
     cls->ufparent = canonicalizeClass(cls->ufparent);
     return cls->ufparent;
   }
-  
+
   Term canonicalizeTerm (Term tm) const {
     for(int i = 0; i < tm.args.size(); ++i) {
       tm.args[i] = canonicalizeClass(tm.args[i]);
@@ -94,12 +95,12 @@ struct Egraph {
     }
     return tm;
   }
-  
-  Eclass *findTerm (Term tm) const {
+
+  Eclass *getTermClass (Term tm) const {
     tm = canonicalizeTerm(tm);
     auto it = term2class.find(tm);
     if (it == term2class.end()) {
-      return nullptr;
+      assert(false && "expected to have term in e-graph.");
     }
     return it->second;
   }
@@ -122,17 +123,18 @@ struct Egraph {
     printf("adding term "); tm.print(); printf("\n");
     return cls;
   };
-  
+
   Eclass *unite(Eclass *a, Eclass *b) {
     assert(a); assert(b);
+    a = canonicalizeClass(a);
+    b = canonicalizeClass(b);
+
     printf("uniting: ");
     printf("\n  - "); a->print();
     printf("\n  - "); b->print(); printf("\n");
     assert(a);
     assert(b);
-    
-    a = canonicalizeClass(a);
-    b = canonicalizeClass(b);
+
 
     if (a == b) { return a; }
     // attach root of smaller subtree
@@ -141,7 +143,7 @@ struct Egraph {
     // (l1 <- l2 <- l3) and another chain (r1), we
     // attach it as: (r1 -> l1 <- l2 <- l3), keeping depth
     // the same, instead of (l1 <- l2 <- l3 <- r1)nn
-    Eclass *child = nullptr,  *parent = nullptr; 
+    Eclass *child = nullptr,  *parent = nullptr;
     if (a->ufSubtreeSize < b->ufSubtreeSize) {
       parent = b; child = a;
     } else {
@@ -162,12 +164,14 @@ struct Egraph {
 
   void rebuild(Eclass *cls) {
     printf("rebuilding eclass: "); cls->print(); printf("\n");
-    // invariant: the Eclass must be the latest Eclass.
+    // invariant: the Eterm, Eclass must be the latest Eclass.
     vector<std::pair<Term, Eclass *>> canonParents;
     for(std::pair<Term, Eclass *> tmcls : cls->parentTerms) {
+      // TODO: why can't this give us a radically different term, which
+      // DOES NOT in fact exist in our database of terms?
       tmcls.first = canonicalizeTerm(tmcls.first);
-      Eclass *newclass = findTerm(tmcls.first);
-      assert(newclass != nullptr);
+      Eclass *newclass = getTermClass(tmcls.first);
+      assert(newclass != nullptr); // TODO: why MUST this exist?
       if (newclass == tmcls.second) { continue; }
       // canonical version of term has changed, time to unite!
       tmcls.second = unite(newclass, tmcls.second);
@@ -201,7 +205,7 @@ struct TermBuilder {
     return new TermBuilder(sym, {arg1, arg2});
   }
 
-  
+
   template<typename ...Args>
   static TermBuilder* mk(const Symbol sym, Args... args) {
     return new TermBuilder(sym, args...);
@@ -246,8 +250,8 @@ void test3() {
   g.unite(cls1, cls2);
   cls1 = g.canonicalizeClass(cls1);
   cls2 = g.canonicalizeClass(cls2);
-  assert(cls1 == cls2); 
-} 
+  assert(cls1 == cls2);
+}
 
 
 void test4() {
@@ -263,8 +267,8 @@ void test4() {
   cls1 = g.canonicalizeClass(cls1);
   cls2 = g.canonicalizeClass(cls2);
   cls3 = g.canonicalizeClass(cls3);
-  assert(cls1 == cls3); 
-  assert(cls1 != cls2); 
+  assert(cls1 == cls3);
+  assert(cls1 != cls2);
 }
 
 
@@ -272,7 +276,7 @@ void test5() {
   Egraph g;
   cout << "adding subtrees, then uniting children\n";
 
-  
+
   Eclass *cls1 =
     TermBuilder::mk(NEG, TermBuilder::mk(CST + 10))->addToEgraph(g);
   Eclass *cls2 =
@@ -283,7 +287,7 @@ void test5() {
   assert(cls1 != cls2);
   assert(cls1 != cls3);
   assert(cls2 != cls3);
-  
+
   Eclass *cst1 = TermBuilder::mk(CST + 10)->addToEgraph(g);
   Eclass *cst2 = TermBuilder::mk(CST + 20)->addToEgraph(g);
   Eclass *cst3 = TermBuilder::mk(CST + 30)->addToEgraph(g);
@@ -295,24 +299,24 @@ void test5() {
 
   cst1 = g.canonicalizeClass(cst1);
   cst2 = g.canonicalizeClass(cst2);
-  cst3 = g.canonicalizeClass(cst3);  
+  cst3 = g.canonicalizeClass(cst3);
   assert(cst1 == cst2);
   assert(cst1 != cst3);
-  
+
   cls1 = g.canonicalizeClass(cls1);
   cls2 = g.canonicalizeClass(cls2);
   cls3 = g.canonicalizeClass(cls3);
   assert(cls1 == cls2);
   assert(cls1 != cls3);
 
-  
+
 }
 
 void test6() {
   Egraph g;
   cout << "adding subtrees, then uniting all children\n" ;
 
-  
+
   Eclass *cls1 =
     TermBuilder::mk(NEG, TermBuilder::mk(CST + 10))->addToEgraph(g);
   Eclass *cls2 =
@@ -323,7 +327,7 @@ void test6() {
   assert(cls1 != cls2);
   assert(cls1 != cls3);
   assert(cls2 != cls3);
-  
+
   Eclass *cst1 = TermBuilder::mk(CST + 10)->addToEgraph(g);
   Eclass *cst2 = TermBuilder::mk(CST + 20)->addToEgraph(g);
   Eclass *cst3 = TermBuilder::mk(CST + 30)->addToEgraph(g);
@@ -336,10 +340,10 @@ void test6() {
 
   cst1 = g.canonicalizeClass(cst1);
   cst2 = g.canonicalizeClass(cst2);
-  cst3 = g.canonicalizeClass(cst3);  
+  cst3 = g.canonicalizeClass(cst3);
   assert(cst1 == cst2);
   assert(cst1 == cst3);
-  
+
   cls1 = g.canonicalizeClass(cls1);
   cls2 = g.canonicalizeClass(cls2);
   cls3 = g.canonicalizeClass(cls3);
@@ -374,7 +378,7 @@ void test7() {
   assert(fs[3] != fs[8]);
   assert(fs[4] == fs[8]);
   assert(fs[4] == fs[12]);
-  assert(fs[4] != fs[7]);  
+  assert(fs[4] != fs[7]);
 }
 int main() {
   test();
