@@ -398,6 +398,57 @@ void test7() {
   assert(fs[4] == fs[12]);
   assert(fs[4] != fs[7]);
 }
+
+// This tests that new equivalence classes are created correctly.
+void test8() {
+  Egraph g;
+  cout << "adding subtrees, then uniting all children\n" ;
+
+
+  Eclass *cls1 = // - 10
+    TermBuilder::mk(NEG, TermBuilder::mk(CST + 10))->addToEgraph(g);
+
+  Eclass *cst1 = TermBuilder::mk(CST + 10)->addToEgraph(g);
+  Eclass *cst2 = TermBuilder::mk(CST + 20)->addToEgraph(g);
+  assert(cst1 != cst2);
+
+  g.unite(cst1, cst2); // 10 = 20
+  // note that this triggers the creation of a (- 20) in some sense.
+
+
+  cls1 = g.canonicalizeClass(cls1);
+  Eclass *cls2 = // - 20
+    TermBuilder::mk(NEG, TermBuilder::mk(CST + 20))->addToEgraph(g);
+  
+  assert(cls1 == cls2); // - 10 == - 20
+
+}
+
+void test9() {
+  // test 8 with unite in opposite order.
+  Egraph g;
+  cout << "adding subtrees, then uniting all children\n" ;
+
+
+  Eclass *cls1 = // - 10
+    TermBuilder::mk(NEG, TermBuilder::mk(CST + 10))->addToEgraph(g);
+
+  Eclass *cst1 = TermBuilder::mk(CST + 10)->addToEgraph(g);
+  Eclass *cst2 = TermBuilder::mk(CST + 20)->addToEgraph(g);
+  assert(cst1 != cst2);
+
+  g.unite(cst2, cst1); // 20 = 10
+  // note that this triggers the creation of a (- 20) in some sense.
+
+
+  cls1 = g.canonicalizeClass(cls1);
+  Eclass *cls2 = // - 20
+    TermBuilder::mk(NEG, TermBuilder::mk(CST + 20))->addToEgraph(g);
+  
+  assert(cls1 == cls2); // - 10 == - 20
+
+}
+
 int main() {
   test();
   test2();
@@ -406,4 +457,6 @@ int main() {
   test5();
   test6();
   test7();
+  test8();
+  test9();
 }
