@@ -11,8 +11,8 @@ const char* __asan_default_options() { return "detect_leaks=0"; }
 using namespace std;
 
 using Symbol = int;
-struct Eclass;
-struct Term;
+struct Eclass; // equiv class. of terms. 
+struct Term; // (head symbol, +, -, plus arguments which )are equiv. classes)
 
 struct Term {
   Symbol head;
@@ -44,12 +44,19 @@ struct Term {
 
 
 
+
+// E1 = [1] | parent: ((+ [E1] [E2]), E3)
+// E2 = [2]
+// E-1 = [-1]
+// E4 = [4]
+// E3 = [ (+ [E1] [E2]), (+ [E-1] [E4])]
 // equivalence class.
 struct Eclass {
   // terms that point to this e-class. memory owned by egraph.
   vector<pair<Term, Eclass*>> parentTerms;
-  Eclass *ufparent;
-  int ufSubtreeSize;
+  // 1) data for union-find.[3]
+  Eclass *ufparent; // parent in the union-find ttee  4
+  int ufSubtreeSize; // size of the subtree
 
   static Eclass *singleton() {
     Eclass *cls = new Eclass;
@@ -79,6 +86,8 @@ private:
 
 
 struct Egraph {
+  // the ONLY global data tracked is
+  // *canonicalized terms* to the equivalence classes they belong to.  
   map<Term, Eclass *> term2class;
 
   Eclass *canonicalizeClass(Eclass *cls) const {
@@ -110,7 +119,7 @@ struct Egraph {
     Eclass *cls = nullptr;
     auto it = term2class.find(tm);
     if (it == term2class.end()) {
-      cls = Eclass::singleton();
+        cls = Eclass::singleton();
       term2class[tm] = cls;
     } else {
       cls = it->second;
@@ -124,6 +133,15 @@ struct Egraph {
     return cls;
   };
 
+
+  // Ea, Eb
+  // canonicalize(NEG(Eb)) = NEG(Eb) 
+
+  // NEG (Ea)
+  // NEG (Eb)
+  // union(Ea, Eb)
+  // Ea <- Eb
+  // canonicalize(NEG(Eb)) = NEG(Ea) 
   Eclass *unite(Eclass *a, Eclass *b) {
     assert(a); assert(b);
     a = canonicalizeClass(a);
@@ -229,7 +247,7 @@ void test() {
   cout << "adding same constants\n";
   Eclass *cls1 = TermBuilder::mk(CST + 10)->addToEgraph(g);
   Eclass *cls2 = TermBuilder::mk(CST + 10)->addToEgraph(g);
-  assert(cls1 == cls2);
+    assert(cls1 == cls2);
 }
 
 void test2() {
@@ -317,9 +335,9 @@ void test6() {
   cout << "adding subtrees, then uniting all children\n" ;
 
 
-  Eclass *cls1 =
+  Eclass *cls1 = // - 10
     TermBuilder::mk(NEG, TermBuilder::mk(CST + 10))->addToEgraph(g);
-  Eclass *cls2 =
+  Eclass *cls2 = // - 20
     TermBuilder::mk(NEG, TermBuilder::mk(CST + 20))->addToEgraph(g);
   Eclass *cls3 =
     TermBuilder::mk(NEG, TermBuilder::mk(CST + 30))->addToEgraph(g);
@@ -335,7 +353,7 @@ void test6() {
   assert(cst2 != cst3);
   assert(cst1 != cst3);
 
-  g.unite(cst1, cst2);
+  g.unite(cst1, cst2); // 10 = 20 
   g.unite(cst1, cst3);
 
   cst1 = g.canonicalizeClass(cst1);
@@ -347,7 +365,7 @@ void test6() {
   cls1 = g.canonicalizeClass(cls1);
   cls2 = g.canonicalizeClass(cls2);
   cls3 = g.canonicalizeClass(cls3);
-  assert(cls1 == cls2);
+  assert(cls1 == cls2); // - 10 == - 20
   assert(cls1 == cls3);
 }
 
