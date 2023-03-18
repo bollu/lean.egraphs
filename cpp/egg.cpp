@@ -184,16 +184,25 @@ struct Egraph {
     printf("rebuilding eclass: "); cls->print(); printf("\n");
     // invariant: the Eterm, Eclass must be the latest Eclass.
     vector<std::pair<Term, Eclass *>> canonParents;
-    for(std::pair<Term, Eclass *> tmcls : cls->parentTerms) {
+    // keep a copy to prevent iterator invalidation!
+    vector<std::pair<Term, Eclass *>> parentTerms = cls->parentTerms;
+    printf("cls size: %d\n", cls->parentTerms.size());  
+    for(std::pair<Term, Eclass *> tmcls : parentTerms) {
       // TODO: why can't this give us a radically different term, which
       // DOES NOT in fact exist in our database of terms?
-      tmcls.first = canonicalizeTerm(tmcls.first);
-      Eclass *newclass = getTermClass(tmcls.first);
+      // tmcls.first = canonicalizeTerm(tmcls.first);  
+      printf("xxx\n");
+      // this invalidates the iterator of 'cls', since this pushes into 'cls'.
+      Eclass *newclass = findOrAddTerm(tmcls.first);
+      printf("yyy\n");
       assert(newclass != nullptr); // TODO: why MUST this exist?
       if (newclass == tmcls.second) { continue; }
       // canonical version of term has changed, time to unite!
+      printf("zzz\n");
       tmcls.second = unite(newclass, tmcls.second);
+      printf("www\n");
       term2class[tmcls.first] = tmcls.second;
+      printf("aaa\n");
       canonParents.push_back(tmcls);
     }
     cls->parentTerms = canonParents;

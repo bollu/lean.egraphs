@@ -5,4 +5,4 @@ run: egg
 	./egg 
 
 egg: egg.cpp
-	g++ -std=c++14 -fsanitize=address -fsanitize=undefined egg.cpp -o egg
+	g++ -g -std=c++14 -fsanitize=address -fsanitize=undefined egg.cpp -o egg
