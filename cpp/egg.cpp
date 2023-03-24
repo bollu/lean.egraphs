@@ -13,6 +13,7 @@ using namespace std;
 using Symbol = int;
 struct Eclass; // equiv class. of terms. 
 struct Term; // (head symbol, +, -, plus arguments which )are equiv. classes)
+struct Pattern;
 
 struct Term {
   Symbol head;
@@ -41,6 +42,7 @@ struct Term {
 };
 
 
+// === E-classes ===
 
 
 
@@ -82,6 +84,7 @@ struct Eclass {
 private:
   Eclass() {};
 };
+
 
 
 
@@ -209,6 +212,45 @@ struct Egraph {
 
   }
 };
+
+
+// === patterns over terms ===
+
+using VarId = int;
+
+using PatternCtx = 
+  std::map<VarId, Eclass *>;
+
+struct Pattern {
+  Egraph *graph;
+  PatternCtx &pctx;
+  Pattern (Egraph *graph, PatternCtx &pctx) :
+    graph(graph), pctx(pctx) {};
+  virtual vector<Eclass *> unify(const Term *t) = 0;
+};
+
+struct PatternVar : public Pattern {
+  VarId id; 
+  PatternVar(Egraph *graph, PatternCtx &pctx, VarId id) :
+    Pattern(graph, pctx), id(id) {}
+
+  vector<Eclass *> unify(Term t) {
+    auto it = pctx.find(id);
+    // add to Eclass;
+    if (it == pctx.end()) {
+      Eclass *tcls = graph->getTermClass(t);
+      pctx[this->id] = tcls;
+      return {tcls};
+    }
+    else {
+      Eclass *tcls = graph->getTermClass(t);
+      // variables agree.
+      if (tcls == it->second) { return {tcls}; }
+      return {}; // failure.
+    }
+  }
+};
+
 
 // A completely constant class used to build terms.
 struct TermBuilder {
