@@ -11,7 +11,7 @@ const char* __asan_default_options() { return "detect_leaks=0"; }
 using namespace std;
 
 using Symbol = int;
-struct Eclass; // equiv class. of terms. 
+struct Eclass; // equiv class. of terms.
 struct Term; // (head symbol, +, -, plus arguments which )are equiv. classes)
 struct Pattern;
 
@@ -56,13 +56,15 @@ struct Term {
 struct Eclass {
   // terms that point to this e-class. memory owned by egraph.
   vector<pair<Term, Eclass*>> parentTerms;
+  vector<Term> members;
   // 1) data for union-find.[3]
   Eclass *ufparent; // parent in the union-find ttee  4
   int ufSubtreeSize; // size of the subtree
 
-  static Eclass *singleton() {
+  static Eclass *singleton(Term tm) {
     Eclass *cls = new Eclass;
     cls->ufparent = cls;
+    cls->members = {tm};
     cls->ufSubtreeSize = 1;
     return cls;
   }
@@ -90,7 +92,7 @@ private:
 
 struct Egraph {
   // the ONLY global data tracked is
-  // *canonicalized terms* to the equivalence classes they belong to.  
+  // *canonicalized terms* to the equivalence classes they belong to.
   map<Term, Eclass *> term2class;
 
   Eclass *canonicalizeClass(Eclass *cls) const {
@@ -122,7 +124,7 @@ struct Egraph {
     Eclass *cls = nullptr;
     auto it = term2class.find(tm);
     if (it == term2class.end()) {
-        cls = Eclass::singleton();
+        cls = Eclass::singleton(tm);
       term2class[tm] = cls;
     } else {
       cls = it->second;
@@ -138,13 +140,13 @@ struct Egraph {
 
 
   // Ea, Eb
-  // canonicalize(NEG(Eb)) = NEG(Eb) 
+  // canonicalize(NEG(Eb)) = NEG(Eb)
 
   // NEG (Ea)
   // NEG (Eb)
   // union(Ea, Eb)
   // Ea <- Eb
-  // canonicalize(NEG(Eb)) = NEG(Ea) 
+  // canonicalize(NEG(Eb)) = NEG(Ea)
   Eclass *unite(Eclass *a, Eclass *b) {
     assert(a); assert(b);
     a = canonicalizeClass(a);
@@ -175,6 +177,10 @@ struct Egraph {
     child->ufparent = parent;
     parent->ufSubtreeSize += child->ufSubtreeSize;
 
+    for (Term tm : child->members) {
+      parent->members.push_back(tm);
+    }
+
     for (std::pair<Term, Eclass*> tm : child->parentTerms) {
       parent->parentTerms.push_back(tm);
     }
@@ -189,11 +195,11 @@ struct Egraph {
     vector<std::pair<Term, Eclass *>> canonParents;
     // keep a copy to prevent iterator invalidation!
     vector<std::pair<Term, Eclass *>> parentTerms = cls->parentTerms;
-    printf("cls size: %d\n", cls->parentTerms.size());  
+    printf("cls size: %d\n", cls->parentTerms.size());
     for(std::pair<Term, Eclass *> tmcls : parentTerms) {
       // TODO: why can't this give us a radically different term, which
       // DOES NOT in fact exist in our database of terms?
-      // tmcls.first = canonicalizeTerm(tmcls.first);  
+      // tmcls.first = canonicalizeTerm(tmcls.first);
       printf("xxx\n");
       // this invalidates the iterator of 'cls', since this pushes into 'cls'.
       Eclass *newclass = findOrAddTerm(tmcls.first);
@@ -217,39 +223,116 @@ struct Egraph {
 // === patterns over terms ===
 
 using VarId = int;
+// using VarId2Cls = std::map<VarId, Eclass *>
 
-using PatternCtx = 
+using PatternCtx =
   std::map<VarId, Eclass *>;
+
+struct ExtractedTerm {
+  PatternCtx ctx;
+  Term term;
+  Eclass *cls;
+
+  ExtractedTerm(PatternCtx ctx, Term term, Eclass *cls) :
+    ctx(ctx), term(term), cls(cls) {};
+};
 
 struct Pattern {
   Egraph *graph;
-  PatternCtx &pctx;
-  Pattern (Egraph *graph, PatternCtx &pctx) :
-    graph(graph), pctx(pctx) {};
-  virtual vector<Eclass *> unify(const Term *t) = 0;
+  Pattern (Egraph *graph) : graph(graph) {};
+  virtual vector<ExtractedTerm> unify(Term t, PatternCtx pctx) = 0;
 };
 
 struct PatternVar : public Pattern {
-  VarId id; 
-  PatternVar(Egraph *graph, PatternCtx &pctx, VarId id) :
-    Pattern(graph, pctx), id(id) {}
+  VarId id;
+  PatternVar(Egraph *graph, VarId id) :
+    Pattern(graph), id(id) {}
 
-  vector<Eclass *> unify(Term t) {
+  vector<ExtractedTerm> unify(Term t, PatternCtx pctx) {
     auto it = pctx.find(id);
     // add to Eclass;
     if (it == pctx.end()) {
       Eclass *tcls = graph->getTermClass(t);
       pctx[this->id] = tcls;
-      return {tcls};
+      return {ExtractedTerm{pctx, t, tcls}};
     }
     else {
       Eclass *tcls = graph->getTermClass(t);
       // variables agree.
-      if (tcls == it->second) { return {tcls}; }
+      if (tcls == it->second) { return {ExtractedTerm(pctx, t, tcls)}; }
       return {}; // failure.
     }
   }
 };
+
+struct Foo {
+  PatternCtx pctx;
+  vector<Term> ts;
+
+  Foo(PatternCtx pctx) : pctx(pctx) {};
+
+};
+
+struct PatternTerm : public Pattern {
+  Symbol head;
+  vector<Pattern *> args;
+
+  PatternTerm(Egraph *graph,
+    Symbol head, vector<Pattern *> args) :
+    Pattern(graph), head(head), args(args) {};
+
+  vector<ExtractedTerm> unify(Term t, PatternCtx pctx) {
+    if (t.head != head) { return {}; }
+    assert(t.head == head);
+
+    if (t.args.size() != args.size()) { return {}; }
+    assert(t.args.size() == args.size());
+
+    if (t.args.size() == 0) {
+      Eclass *tcls = graph->getTermClass(t);
+      return {ExtractedTerm(pctx, t, tcls)};
+    }
+
+    assert(t.args.size() > 0);
+    vector<Foo> foos = {pctx};
+
+    for(int i = 0; i < t.args.size(); ++i) {
+      vector<Foo> newfoos;
+      for (Term ti : t.args[i]->members) { // for each tm in equiv class of arg[i]
+        for(Foo foo : foos) {
+          vector<ExtractedTerm> ets = this->args[i]->unify(ti, foo.pctx);
+          // why do I need an extracted term here? Isn't it true that (et.term == ti) ?
+          // Hm, maybe not, (et.term.cls == ti.cls), but they are not in fact equal.
+          // TOOD: think of assertion necessary.
+          for (ExtractedTerm et : ets) {
+            Foo foo_et = foo;
+            foo.ts.push_back(et.term);
+            assert(foo.ts.size() == i+1);
+
+            foo.pctx = et.ctx;
+            newfoos.push_back(foo);
+          }
+        }
+        foos = newfoos;
+      }
+    }
+
+    vector<ExtractedTerm> outs;
+    for(Foo foo : foos) {
+      assert(foo.ts.size() == t.args.size());
+      Term tm;
+      tm.head = this->head;
+      for(Term arg : foo.ts) {
+        tm.args.push_back(graph->getTermClass(arg));
+      }
+      Eclass *tmcls = graph->getTermClass(tm);
+      outs.push_back(ExtractedTerm(foo.pctx, tm, tmcls));
+    }
+    return outs;
+  }
+};
+
+
 
 
 // A completely constant class used to build terms.
@@ -404,7 +487,7 @@ void test6() {
   assert(cst2 != cst3);
   assert(cst1 != cst3);
 
-  g.unite(cst1, cst2); // 10 = 20 
+  g.unite(cst1, cst2); // 10 = 20
   g.unite(cst1, cst3);
 
   cst1 = g.canonicalizeClass(cst1);
@@ -470,7 +553,7 @@ void test8() {
   cls1 = g.canonicalizeClass(cls1);
   Eclass *cls2 = // - 20
     TermBuilder::mk(NEG, TermBuilder::mk(CST + 20))->addToEgraph(g);
-  
+
   assert(cls1 == cls2); // - 10 == - 20
 
 }
@@ -495,7 +578,7 @@ void test9() {
   cls1 = g.canonicalizeClass(cls1);
   Eclass *cls2 = // - 20
     TermBuilder::mk(NEG, TermBuilder::mk(CST + 20))->addToEgraph(g);
-  
+
   assert(cls1 == cls2); // - 10 == - 20
 
 }
