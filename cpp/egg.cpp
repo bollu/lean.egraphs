@@ -60,7 +60,6 @@ struct Eclass {
   // 1) data for union-find.[3]
   Eclass *ufparent; // parent in the union-find ttee  4
   int ufSubtreeSize; // size of the subtree
-
   static Eclass *singleton(Term tm) {
     Eclass *cls = new Eclass;
     cls->ufparent = cls;
@@ -241,6 +240,19 @@ struct Pattern {
   Egraph *graph;
   Pattern (Egraph *graph) : graph(graph) {};
   virtual vector<ExtractedTerm> unify(Term t, PatternCtx pctx) = 0;
+
+  // try to unify on all terms in the egraph.
+  vector<ExtractedTerm> run() {
+    vector<ExtractedTerm> outs;
+    for(auto it : graph->term2class) {
+        // for each concrete term the user has added...
+        for(Term t : it.second->members) {
+            vector<ExtractedTerm> out = this->unify(t, {});
+            outs.insert(outs.end(), out.begin(), out.end());
+        }
+    }
+    return outs;
+  }
 };
 
 struct PatternVar : public Pattern {
@@ -376,6 +388,7 @@ struct TermBuilder {
 static const int CST = 0;
 static const int ADD = 100;
 static const int NEG = 200;
+static const int X = -42; // variable
 void test() {
   Egraph g;
   cout << "adding same constants\n";
@@ -580,8 +593,21 @@ void test9() {
     TermBuilder::mk(NEG, TermBuilder::mk(CST + 20))->addToEgraph(g);
 
   assert(cls1 == cls2); // - 10 == - 20
-
 }
+
+
+// extract out all values from an e-class
+void test10() {
+  Egraph g;
+  Eclass *cls1 = TermBuilder::mk(CST + 1)->addToEgraph(g);
+  Eclass *cls2 = TermBuilder::mk(CST + 2)->addToEgraph(g);
+  Eclass *cls3 = TermBuilder::mk(CST + 3)->addToEgraph(g);
+
+  Pattern *p = new PatternVar(&g, X + 1);
+  vector<ExtractedTerm> ts = p->run();
+  assert(ts.size() == 3); // we should get the three terms.
+}
+
 
 int main() {
   test();
@@ -593,4 +619,5 @@ int main() {
   test7();
   test8();
   test9();
+  test10();
 }
