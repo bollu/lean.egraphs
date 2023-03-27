@@ -6,6 +6,7 @@
 #include "assert.h"
 #include <queue>
 #include <functional>
+#include <optional>
 #include <set>
 
 const char* __asan_default_options() { return "detect_leaks=0"; }
@@ -14,17 +15,27 @@ using namespace std;
 
 using Symbol = int;
 struct Eclass; // equiv class. of terms.
-struct HashConsTerm; // (head symbol, +, -, plus arguments which )are equiv. classes)
+struct HashConsTerm; // (sym symbol, +, -, plus arguments which )are equiv. classes)
 struct Pattern;
 struct Term;
 
 struct HashConsTerm {
-  Symbol head;
+  Symbol sym;
   vector<Eclass *> args;
+
+  bool operator == (const HashConsTerm &other ) const {
+    if (sym != other.sym) { return false; }
+    if (args.size() != other.args.size()) { return false; }
+    for(int i = 0; i < args.size(); ++i) {
+      if (args[i] != other.args[i]) { return false; }
+    }
+    return true;
+  }
+
   bool operator < (const HashConsTerm &other) const {
-    if (head < other.head) { return true; }
-    if (head > other.head) { return false; }
-    assert (head == other.head);
+    if (sym < other.sym) { return true; }
+    if (sym > other.sym) { return false; }
+    assert (sym == other.sym);
     if (args.size() < other.args.size()) { return true; }
     if (args.size() > other.args.size()) { return false; }
     assert(args.size() == other.args.size());
@@ -36,7 +47,7 @@ struct HashConsTerm {
   }
 
   void print() const {
-    printf("[%4d", head);
+    printf("[%4d", sym);
     for(int i = 0; i < args.size(); ++i) {
       printf(", %4p", args[i]);
     }
@@ -254,7 +265,7 @@ struct Term {
 
   Eclass* addToEgraph(Egraph &e) const {
     HashConsTerm tm;
-    tm.head = sym;
+    tm.sym = sym;
     for(int i = 0; i < this->args.size(); ++i) {
       tm.args.push_back(this->args[i]->addToEgraph(e));
     }
@@ -266,122 +277,84 @@ struct Term {
 
 using VarId = int;
 
-using PatternCtx =
-  std::map<VarId, Eclass *>;
-  // TODO: use callback
+using PatternCtx = std::map<VarId, HashConsTerm>;
 
-struct ExtractedClass {
-  PatternCtx pctx;
-  Eclass *cls;
-  ExtractedClass(PatternCtx pctx, Eclass *cls) : pctx(pctx), cls(cls) {};
-};
 
 struct Pattern {
   Egraph *graph;
-  using Callback = std::function<void(ExtractedClass)>;
+  using Callback = std::function<void(PatternCtx)>;
   Pattern (Egraph *graph) : graph(graph) {};
-  virtual void unify(Eclass *cls, PatternCtx pctx, Pattern::Callback cb) = 0;
-
-  // try to unify on all terms in the egraph.
-  // vector<ExtractedClass> run() {
-  //   vector<ExtractedClass> outs;
-  //   for(auto it : graph->term2class) {
-  //       // for each concrete term the user has added...
-  //       for(HashConsTerm t : it.second->members) {
-  //           vector<ExtractedClass> out = this->unify(t, {});
-  //           outs.insert(outs.end(), out.begin(), out.end());
-  //       }
-  //   }
-  //   return outs;
-  // }
+  virtual optional<HashConsTerm> subst(PatternCtx pctx) = 0;
+  virtual void unify(HashConsTerm tm, PatternCtx pctx, Pattern::Callback cb) = 0;
 };
-
-
 
 struct PatternVar : public Pattern {
   VarId id;
   PatternVar(Egraph *graph, VarId id) :
     Pattern(graph), id(id) {}
-  using Callback = std::function<void(ExtractedClass)>;
 
-  void unify(Eclass *cls, PatternCtx pctx, Callback cb) {
+  optional<HashConsTerm> subst(PatternCtx pctx) {
+    auto it = pctx.find(this->id);
+    if (it == pctx.end()) { return {}; }
+    return {it->second};
+  }
+
+  virtual void unify(HashConsTerm tm, PatternCtx pctx, Pattern::Callback cb) {
     auto it = pctx.find(id);
     if (it == pctx.end()) {
-         pctx[this->id] = cls;
-         cb(ExtractedClass(pctx, cls));
-    } else if (it->second == cls) {
-      cb(ExtractedClass(pctx, cls));
-    }
-    return; // no match
+      pctx[id] = tm;
+      cb(pctx);
+     } else if (it->second == tm) {
+      cb(pctx);
+     }
   }
-};
-
-struct Foo {
-  PatternCtx pctx;
-  vector<Eclass *> clss;
-  Foo(PatternCtx pctx) : pctx(pctx) {};
-
-  Foo appendExtractedClass(ExtractedClass ecls) {
-    Foo out = *this;
-    out.clss.push_back(ecls.cls);
-    out.pctx = ecls.pctx;
-    return out;
-  }
-
 
 
 };
 
 struct PatternTerm : public Pattern {
-  Symbol head;
+  Symbol sym;
   vector<Pattern *> args;
 
   PatternTerm(Egraph *graph,
-    Symbol head, vector<Pattern *> args) :
-    Pattern(graph), head(head), args(args) {};
+    Symbol sym, vector<Pattern *> args) :
+    Pattern(graph), sym(sym), args(args) {};
 
+  optional<HashConsTerm> subst(PatternCtx pctx) {
+    HashConsTerm tm;
+    tm.sym = sym;
 
-  void unify(Eclass *cls, PatternCtx pctx, Callback cb) {
-     for(HashConsTerm htm : cls->members) {
-       unify_(htm, pctx, cb);
-     }
+    for(Pattern * p : args) {
+      optional<HashConsTerm> otm = p->subst(pctx);
+      if(!otm) { return {}; }
+      tm.args.push_back(graph->findOrAddHashConsTerm(*otm));
+    }
+    return tm;
   }
-private:
-  void unify_(HashConsTerm t, PatternCtx pctx, Callback cb) {
 
-    if (t.head != head) { return; }
-    assert(t.head == head);
+  virtual void unify(HashConsTerm tm, PatternCtx pctx, Pattern::Callback cb) {
+    if (tm.sym != sym) { return; }
+    if (tm.args.size() != args.size()) { return; }
+  
+    vector<PatternCtx> states;
+    states.push_back(pctx);
 
-    if (t.args.size() != args.size()) { return; }
-    assert(t.args.size() == args.size());
-
-    if (t.args.size() == 0) {
-      Eclass *tcls = graph->getTermClass(t);
-      cb(ExtractedClass(pctx, tcls));
-    }
-
-    assert(t.args.size() > 0);
-    vector<Foo> foos = {Foo(pctx)};
-    for(int i = 0; i < t.args.size(); ++i) {
-      vector<Foo> newfoos;
-      for(Foo foo : foos) {
-        this->args[i]->unify(t.args[i], foo.pctx, [&](ExtractedClass ec) {
-          newfoos.push_back(foo.appendExtractedClass(ec));
-        });
+    for(int i = 0; i < args.size(); ++i) {
+      vector<PatternCtx> newstates;
+      for(PatternCtx pctx : states) {
+        for(HashConsTerm argtm : tm.args[i]->members) {
+           args[i]->unify(argtm, pctx, [&](PatternCtx newpctx) {
+              newstates.push_back(newpctx);
+           });
+        }
       }
-      foos = newfoos;
+      newstates = states;
     }
 
-    for(Foo foo : foos) {
-      assert(foo.clss.size() == t.args.size());
-      HashConsTerm tm;
-      tm.head = this->head;
-      tm.args = foo.clss;
-      Eclass *tmcls = graph->getTermClass(tm);
-      cb(ExtractedClass(foo.pctx, tmcls));
-    }
+    for(PatternCtx pctx : states) { cb(pctx); }
   }
 };
+
 
 static const int CST = 0;
 static const int ADD = 100;
@@ -527,7 +500,7 @@ void test7() {
   // add upto f^10.
   for(int i = 2; i <= 20; ++i) {
     HashConsTerm tm;
-    tm.head = CST + 10;
+    tm.sym = CST + 10;
     tm.args = { fs[i-1] } ;
     fs.push_back(g.findOrAddHashConsTerm(tm));
   }
