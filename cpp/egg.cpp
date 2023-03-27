@@ -264,35 +264,33 @@ struct Term {
 // === patterns over terms ===
 
 using VarId = int;
-// using VarId2Cls = std::map<VarId, Eclass *>
 
 using PatternCtx =
   std::map<VarId, Eclass *>;
 
-struct ExtractedTerm {
-  PatternCtx ctx;
-  HashConsTerm term;
-  ExtractedTerm(PatternCtx ctx, HashConsTerm term) : term(term) {};
+struct ExtractedClass {
+  PatternCtx pctx;
+  Eclass *cls;
+  ExtractedClass(PatternCtx pctx, Eclass *cls) : pctx(pctx), cls(cls) {};
 };
 
 struct Pattern {
   Egraph *graph;
   Pattern (Egraph *graph) : graph(graph) {};
-  virtual vector<ExtractedTerm> unify(HashConsTerm t, PatternCtx pctx) = 0;
-
+  virtual vector<ExtractedClass> unify(Eclass *cls, PatternCtx pctx) = 0;
 
   // try to unify on all terms in the egraph.
-  vector<ExtractedTerm> run() {
-    vector<ExtractedTerm> outs;
-    for(auto it : graph->term2class) {
-        // for each concrete term the user has added...
-        for(HashConsTerm t : it.second->members) {
-            vector<ExtractedTerm> out = this->unify(t, {});
-            outs.insert(outs.end(), out.begin(), out.end());
-        }
-    }
-    return outs;
-  }
+  // vector<ExtractedClass> run() {
+  //   vector<ExtractedClass> outs;
+  //   for(auto it : graph->term2class) {
+  //       // for each concrete term the user has added...
+  //       for(HashConsTerm t : it.second->members) {
+  //           vector<ExtractedClass> out = this->unify(t, {});
+  //           outs.insert(outs.end(), out.begin(), out.end());
+  //       }
+  //   }
+  //   return outs;
+  // }
 };
 
 
@@ -302,28 +300,31 @@ struct PatternVar : public Pattern {
   PatternVar(Egraph *graph, VarId id) :
     Pattern(graph), id(id) {}
 
-  vector<ExtractedTerm> unify(HashConsTerm t, PatternCtx pctx) {
+  vector<ExtractedClass *> unify(Eclass *cls, PatternCtx pctx) {
     auto it = pctx.find(id);
-    // add to Eclass;
     if (it == pctx.end()) {
-      Eclass *tcls = graph->getTermClass(t);
-      pctx[this->id] = tcls;
-      return {ExtractedTerm{pctx, t}};
+         pctx[this->id] = cls;
+         return {ExtractedClass(pctx, cls)};
+    } else if (it->second == cls) {
+      return {ExtractedClass(pctx, cls)};
     }
-    else {
-      Eclass *tcls = graph->getTermClass(t);
-      // variables agree.
-      if (tcls == it->second) { return {ExtractedTerm(pctx, t)}; }
-      return {}; // failure.
-    }
+    return {}; // no match.
   }
 };
 
 struct Foo {
   PatternCtx pctx;
-  vector<HashConsTerm> ts;
-
+  vector<Eclass *> clss;
   Foo(PatternCtx pctx) : pctx(pctx) {};
+
+  Foo appendExtractedClass(ExtractedClass ecls) {
+    Foo out = *this;
+    out.clss.push_back(ecls.cls);
+    out.pctx = ecls.pctx;
+    return out;
+  }
+
+
 
 };
 
@@ -335,7 +336,17 @@ struct PatternTerm : public Pattern {
     Symbol head, vector<Pattern *> args) :
     Pattern(graph), head(head), args(args) {};
 
-  vector<ExtractedTerm> unify(HashConsTerm t, PatternCtx pctx) {
+
+  vector<ExtractedClass> unify(Eclass *cls, PatternCtx pctx) {
+     vector<ExtractedClass> outs;
+     for(Term tm : cls->members) {
+       unify_(t, pctx, out);
+     }
+     return out;
+  }
+private:
+  void unify_(Term t, PatternCtx pctx, vector<ExtractedClass> &out) {
+
     if (t.head != head) { return {}; }
     assert(t.head == head);
 
@@ -344,51 +355,37 @@ struct PatternTerm : public Pattern {
 
     if (t.args.size() == 0) {
       Eclass *tcls = graph->getTermClass(t);
-      return {ExtractedTerm(pctx, t)};
+      return {ExtractedClass(pctx, tcls)};
     }
 
     assert(t.args.size() > 0);
-    vector<Foo> foos = {pctx};
+    vector<Foo> foos = {Foo(pctx)};
 
     for(int i = 0; i < t.args.size(); ++i) {
       vector<Foo> newfoos;
-      for (HashConsTerm ti : t.args[i]->members) { // for each tm in equiv class of arg[i]
+      for (Eclass *argval : t.args[i]) { // for each tm in equiv class of arg[i]
         for(Foo foo : foos) {
-          vector<ExtractedTerm> ets = this->args[i]->unify(ti, foo.pctx);
-          // why do I need an extracted term here? Isn't it true that (et.term == ti) ?
-          // Hm, maybe not, (et.term.cls == ti.cls), but they are not in fact equal.
-          // TOOD: think of assertion necessary.
-          for (ExtractedTerm et : ets) {
-            Foo foo_et = foo;
-            foo.ts.push_back(et.term);
-            assert(foo.ts.size() == i+1);
-
-            foo.pctx = et.ctx;
-            newfoos.push_back(foo);
+          vector<ExtractedClass> ecs = this->args[i]->unify(argval, foo.pctx);
+          for (ExtractedClass ec : ecs) {
+            newfoos.push_back(foo.appendExtractedClass(ec));
           }
         }
         foos = newfoos;
       }
     }
 
-    vector<ExtractedTerm> outs;
     for(Foo foo : foos) {
       assert(foo.ts.size() == t.args.size());
       HashConsTerm tm;
       tm.head = this->head;
-      for(HashConsTerm arg : foo.ts) {
+      for(Eclass *cls : foo.ts) {
         tm.args.push_back(graph->getTermClass(arg));
       }
       Eclass *tmcls = graph->getTermClass(tm);
-      outs.push_back(ExtractedTerm(foo.pctx, tm));
+      out.push_back(ExtractedClass(foo.pctx, tmcls));
     }
-    return outs;
   }
 };
-
-
-
-
 
 static const int CST = 0;
 static const int ADD = 100;
@@ -609,8 +606,8 @@ void test10() {
   Eclass *cls3 = Term::mk(CST + 3)->addToEgraph(g);
 
   Pattern *p = new PatternVar(&g, X + 1);
-  vector<ExtractedTerm> ts = p->run();
-  // std::set<ExtractedTerm> tsset;
+  vector<ExtractedClass> ts = p->run();
+  // std::set<ExtractedClass> tsset;
   // tsset.insert(tsset.end(), ts.begin(), ts.end());
   assert(ts.size() == 3); // we should get the three terms.
 }
