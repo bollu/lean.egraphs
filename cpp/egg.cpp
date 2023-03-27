@@ -3,7 +3,7 @@
 #include <set>
 #include <map>
 #include <initializer_list>
-#include <assert.h>
+#include "assert.h"
 #include <queue>
 #include <set>
 
@@ -267,6 +267,7 @@ using VarId = int;
 
 using PatternCtx =
   std::map<VarId, Eclass *>;
+  // TODO: use callback
 
 struct ExtractedClass {
   PatternCtx pctx;
@@ -277,7 +278,7 @@ struct ExtractedClass {
 struct Pattern {
   Egraph *graph;
   Pattern (Egraph *graph) : graph(graph) {};
-  virtual vector<ExtractedClass> unify(Eclass *cls, PatternCtx pctx) = 0;
+  virtual std::vector<ExtractedClass> unify(Eclass *cls, PatternCtx pctx) = 0;
 
   // try to unify on all terms in the egraph.
   // vector<ExtractedClass> run() {
@@ -300,7 +301,7 @@ struct PatternVar : public Pattern {
   PatternVar(Egraph *graph, VarId id) :
     Pattern(graph), id(id) {}
 
-  vector<ExtractedClass *> unify(Eclass *cls, PatternCtx pctx) {
+  vector<ExtractedClass> unify(Eclass *cls, PatternCtx pctx) {
     auto it = pctx.find(id);
     if (it == pctx.end()) {
          pctx[this->id] = cls;
@@ -338,24 +339,24 @@ struct PatternTerm : public Pattern {
 
 
   vector<ExtractedClass> unify(Eclass *cls, PatternCtx pctx) {
-     vector<ExtractedClass> outs;
-     for(Term tm : cls->members) {
-       unify_(t, pctx, out);
+     vector<ExtractedClass> out;
+     for(HashConsTerm htm : cls->members) {
+       unify_(htm, pctx, out);
      }
      return out;
   }
 private:
-  void unify_(Term t, PatternCtx pctx, vector<ExtractedClass> &out) {
+  void unify_(HashConsTerm t, PatternCtx pctx, vector<ExtractedClass> &out) {
 
-    if (t.head != head) { return {}; }
+    if (t.head != head) { return; }
     assert(t.head == head);
 
-    if (t.args.size() != args.size()) { return {}; }
+    if (t.args.size() != args.size()) { return; }
     assert(t.args.size() == args.size());
 
     if (t.args.size() == 0) {
       Eclass *tcls = graph->getTermClass(t);
-      return {ExtractedClass(pctx, tcls)};
+      out.push_back(ExtractedClass(pctx, tcls));
     }
 
     assert(t.args.size() > 0);
@@ -363,24 +364,20 @@ private:
 
     for(int i = 0; i < t.args.size(); ++i) {
       vector<Foo> newfoos;
-      for (Eclass *argval : t.args[i]) { // for each tm in equiv class of arg[i]
-        for(Foo foo : foos) {
-          vector<ExtractedClass> ecs = this->args[i]->unify(argval, foo.pctx);
-          for (ExtractedClass ec : ecs) {
-            newfoos.push_back(foo.appendExtractedClass(ec));
-          }
+      for(Foo foo : foos) {
+        vector<ExtractedClass> ecs = this->args[i]->unify(t.args[i], foo.pctx);
+        for (ExtractedClass ec : ecs) {
+          newfoos.push_back(foo.appendExtractedClass(ec));
         }
-        foos = newfoos;
+      foos = newfoos;
       }
     }
 
     for(Foo foo : foos) {
-      assert(foo.ts.size() == t.args.size());
+      assert(foo.clss.size() == t.args.size());
       HashConsTerm tm;
       tm.head = this->head;
-      for(Eclass *cls : foo.ts) {
-        tm.args.push_back(graph->getTermClass(arg));
-      }
+      tm.args = foo.clss;
       Eclass *tmcls = graph->getTermClass(tm);
       out.push_back(ExtractedClass(foo.pctx, tmcls));
     }
@@ -606,10 +603,10 @@ void test10() {
   Eclass *cls3 = Term::mk(CST + 3)->addToEgraph(g);
 
   Pattern *p = new PatternVar(&g, X + 1);
-  vector<ExtractedClass> ts = p->run();
+  // vector<ExtractedClass> ts = p->run();
   // std::set<ExtractedClass> tsset;
   // tsset.insert(tsset.end(), ts.begin(), ts.end());
-  assert(ts.size() == 3); // we should get the three terms.
+  // assert(ts.size() == 3); // we should get the three terms.
 }
 
 
