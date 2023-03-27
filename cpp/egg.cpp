@@ -5,6 +5,7 @@
 #include <initializer_list>
 #include <assert.h>
 #include <queue>
+#include <set>
 
 const char* __asan_default_options() { return "detect_leaks=0"; }
 
@@ -12,13 +13,14 @@ using namespace std;
 
 using Symbol = int;
 struct Eclass; // equiv class. of terms.
-struct Term; // (head symbol, +, -, plus arguments which )are equiv. classes)
+struct HashConsTerm; // (head symbol, +, -, plus arguments which )are equiv. classes)
 struct Pattern;
+struct Term;
 
-struct Term {
+struct HashConsTerm {
   Symbol head;
   vector<Eclass *> args;
-  bool operator < (const Term &other) const {
+  bool operator < (const HashConsTerm &other) const {
     if (head < other.head) { return true; }
     if (head > other.head) { return false; }
     assert (head == other.head);
@@ -55,12 +57,12 @@ struct Term {
 // equivalence class.
 struct Eclass {
   // terms that point to this e-class. memory owned by egraph.
-  vector<pair<Term, Eclass*>> parentTerms;
-  vector<Term> members;
+  vector<pair<HashConsTerm, Eclass*>> parentTerms;
+  vector<HashConsTerm> members;
   // 1) data for union-find.[3]
   Eclass *ufparent; // parent in the union-find ttee  4
   int ufSubtreeSize; // size of the subtree
-  static Eclass *singleton(Term tm) {
+  static Eclass *singleton(HashConsTerm tm) {
     Eclass *cls = new Eclass;
     cls->ufparent = cls;
     cls->members = {tm};
@@ -92,7 +94,7 @@ private:
 struct Egraph {
   // the ONLY global data tracked is
   // *canonicalized terms* to the equivalence classes they belong to.
-  map<Term, Eclass *> term2class;
+  map<HashConsTerm, Eclass *> term2class;
 
   Eclass *canonicalizeClass(Eclass *cls) const {
     assert(cls);
@@ -101,16 +103,16 @@ struct Egraph {
     return cls->ufparent;
   }
 
-  Term canonicalizeTerm (Term tm) const {
-    for(int i = 0; i < tm.args.size(); ++i) {
+  HashConsTerm canonicalizeHashConsTerm (HashConsTerm tm) const {
+    for (int i = 0; i < tm.args.size(); ++i) {
       tm.args[i] = canonicalizeClass(tm.args[i]);
       assert(tm.args[i] != nullptr);
     }
     return tm;
   }
 
-  Eclass *getTermClass (Term tm) const {
-    tm = canonicalizeTerm(tm);
+  Eclass *getTermClass (HashConsTerm tm) const {
+    tm = canonicalizeHashConsTerm(tm);
     auto it = term2class.find(tm);
     if (it == term2class.end()) {
       assert(false && "expected to have term in e-graph.");
@@ -118,8 +120,8 @@ struct Egraph {
     return it->second;
   }
 
-  Eclass* findOrAddTerm (Term tm) {
-    tm = canonicalizeTerm(tm);
+  Eclass* findOrAddHashConsTerm (HashConsTerm tm) {
+    tm = canonicalizeHashConsTerm(tm);
     Eclass *cls = nullptr;
     auto it = term2class.find(tm);
     if (it == term2class.end()) {
@@ -176,11 +178,11 @@ struct Egraph {
     child->ufparent = parent;
     parent->ufSubtreeSize += child->ufSubtreeSize;
 
-    for (Term tm : child->members) {
+    for (HashConsTerm tm : child->members) {
       parent->members.push_back(tm);
     }
 
-    for (std::pair<Term, Eclass*> tm : child->parentTerms) {
+    for (std::pair<HashConsTerm, Eclass*> tm : child->parentTerms) {
       parent->parentTerms.push_back(tm);
     }
 
@@ -191,17 +193,17 @@ struct Egraph {
   void rebuild(Eclass *cls) {
     printf("rebuilding eclass: "); cls->print(); printf("\n");
     // invariant: the Eterm, Eclass must be the latest Eclass.
-    vector<std::pair<Term, Eclass *>> canonParents;
+    vector<std::pair<HashConsTerm, Eclass *>> canonParents;
     // keep a copy to prevent iterator invalidation!
-    vector<std::pair<Term, Eclass *>> parentTerms = cls->parentTerms;
+    vector<std::pair<HashConsTerm, Eclass *>> parentTerms = cls->parentTerms;
     printf("cls size: %d\n", cls->parentTerms.size());
-    for(std::pair<Term, Eclass *> tmcls : parentTerms) {
+    for(std::pair<HashConsTerm, Eclass *> tmcls : parentTerms) {
       // TODO: why can't this give us a radically different term, which
       // DOES NOT in fact exist in our database of terms?
-      // tmcls.first = canonicalizeTerm(tmcls.first);
+      // tmcls.first = canonicalizeHashConsTerm(tmcls.first);
       printf("xxx\n");
       // this invalidates the iterator of 'cls', since this pushes into 'cls'.
-      Eclass *newclass = findOrAddTerm(tmcls.first);
+      Eclass *newclass = findOrAddHashConsTerm(tmcls.first);
       printf("yyy\n");
       assert(newclass != nullptr); // TODO: why MUST this exist?
       if (newclass == tmcls.second) { continue; }
@@ -218,6 +220,46 @@ struct Egraph {
   }
 };
 
+// === terms ===
+
+
+// A completely constant class used to build hash cons terms.
+struct Term {
+  const Symbol sym;
+  const vector<Term *> args;
+
+  Term(Symbol sym, initializer_list<Term *> args) :
+    sym(sym), args(args) {}
+
+  static Term* mk(const Symbol sym) {
+    return new Term(sym, {});
+  }
+
+  static Term* mk(const Symbol sym, Term *arg1) {
+    return new Term(sym, {arg1});
+  }
+
+  static Term* mk(const Symbol sym,
+			 Term *arg1,
+			 Term *arg2) {
+    return new Term(sym, {arg1, arg2});
+  }
+
+
+  template<typename ...Args>
+  static Term* mk(const Symbol sym, Args... args) {
+    return new Term(sym, args...);
+  }
+
+  Eclass* addToEgraph(Egraph &e) const {
+    HashConsTerm tm;
+    tm.head = sym;
+    for(int i = 0; i < this->args.size(); ++i) {
+      tm.args.push_back(this->args[i]->addToEgraph(e));
+    }
+    return e.findOrAddHashConsTerm(tm);
+  }
+};
 
 // === patterns over terms ===
 
@@ -229,24 +271,22 @@ using PatternCtx =
 
 struct ExtractedTerm {
   PatternCtx ctx;
-  Term term;
-  Eclass *cls;
-
-  ExtractedTerm(PatternCtx ctx, Term term, Eclass *cls) :
-    ctx(ctx), term(term), cls(cls) {};
+  HashConsTerm term;
+  ExtractedTerm(PatternCtx ctx, HashConsTerm term) : term(term) {};
 };
 
 struct Pattern {
   Egraph *graph;
   Pattern (Egraph *graph) : graph(graph) {};
-  virtual vector<ExtractedTerm> unify(Term t, PatternCtx pctx) = 0;
+  virtual vector<ExtractedTerm> unify(HashConsTerm t, PatternCtx pctx) = 0;
+
 
   // try to unify on all terms in the egraph.
   vector<ExtractedTerm> run() {
     vector<ExtractedTerm> outs;
     for(auto it : graph->term2class) {
         // for each concrete term the user has added...
-        for(Term t : it.second->members) {
+        for(HashConsTerm t : it.second->members) {
             vector<ExtractedTerm> out = this->unify(t, {});
             outs.insert(outs.end(), out.begin(), out.end());
         }
@@ -255,23 +295,25 @@ struct Pattern {
   }
 };
 
+
+
 struct PatternVar : public Pattern {
   VarId id;
   PatternVar(Egraph *graph, VarId id) :
     Pattern(graph), id(id) {}
 
-  vector<ExtractedTerm> unify(Term t, PatternCtx pctx) {
+  vector<ExtractedTerm> unify(HashConsTerm t, PatternCtx pctx) {
     auto it = pctx.find(id);
     // add to Eclass;
     if (it == pctx.end()) {
       Eclass *tcls = graph->getTermClass(t);
       pctx[this->id] = tcls;
-      return {ExtractedTerm{pctx, t, tcls}};
+      return {ExtractedTerm{pctx, t}};
     }
     else {
       Eclass *tcls = graph->getTermClass(t);
       // variables agree.
-      if (tcls == it->second) { return {ExtractedTerm(pctx, t, tcls)}; }
+      if (tcls == it->second) { return {ExtractedTerm(pctx, t)}; }
       return {}; // failure.
     }
   }
@@ -279,7 +321,7 @@ struct PatternVar : public Pattern {
 
 struct Foo {
   PatternCtx pctx;
-  vector<Term> ts;
+  vector<HashConsTerm> ts;
 
   Foo(PatternCtx pctx) : pctx(pctx) {};
 
@@ -293,7 +335,7 @@ struct PatternTerm : public Pattern {
     Symbol head, vector<Pattern *> args) :
     Pattern(graph), head(head), args(args) {};
 
-  vector<ExtractedTerm> unify(Term t, PatternCtx pctx) {
+  vector<ExtractedTerm> unify(HashConsTerm t, PatternCtx pctx) {
     if (t.head != head) { return {}; }
     assert(t.head == head);
 
@@ -302,7 +344,7 @@ struct PatternTerm : public Pattern {
 
     if (t.args.size() == 0) {
       Eclass *tcls = graph->getTermClass(t);
-      return {ExtractedTerm(pctx, t, tcls)};
+      return {ExtractedTerm(pctx, t)};
     }
 
     assert(t.args.size() > 0);
@@ -310,7 +352,7 @@ struct PatternTerm : public Pattern {
 
     for(int i = 0; i < t.args.size(); ++i) {
       vector<Foo> newfoos;
-      for (Term ti : t.args[i]->members) { // for each tm in equiv class of arg[i]
+      for (HashConsTerm ti : t.args[i]->members) { // for each tm in equiv class of arg[i]
         for(Foo foo : foos) {
           vector<ExtractedTerm> ets = this->args[i]->unify(ti, foo.pctx);
           // why do I need an extracted term here? Isn't it true that (et.term == ti) ?
@@ -332,13 +374,13 @@ struct PatternTerm : public Pattern {
     vector<ExtractedTerm> outs;
     for(Foo foo : foos) {
       assert(foo.ts.size() == t.args.size());
-      Term tm;
+      HashConsTerm tm;
       tm.head = this->head;
-      for(Term arg : foo.ts) {
+      for(HashConsTerm arg : foo.ts) {
         tm.args.push_back(graph->getTermClass(arg));
       }
       Eclass *tmcls = graph->getTermClass(tm);
-      outs.push_back(ExtractedTerm(foo.pctx, tm, tmcls));
+      outs.push_back(ExtractedTerm(foo.pctx, tm));
     }
     return outs;
   }
@@ -347,43 +389,6 @@ struct PatternTerm : public Pattern {
 
 
 
-// A completely constant class used to build terms.
-struct TermBuilder {
-  const Symbol sym;
-  const vector<TermBuilder *> args;
-
-  TermBuilder(Symbol sym, initializer_list<TermBuilder *> args) :
-    sym(sym), args(args) {}
-
-  static TermBuilder* mk(const Symbol sym) {
-    return new TermBuilder(sym, {});
-  }
-
-  static TermBuilder* mk(const Symbol sym, TermBuilder *arg1) {
-    return new TermBuilder(sym, {arg1});
-  }
-
-  static TermBuilder* mk(const Symbol sym,
-			 TermBuilder *arg1,
-			 TermBuilder *arg2) {
-    return new TermBuilder(sym, {arg1, arg2});
-  }
-
-
-  template<typename ...Args>
-  static TermBuilder* mk(const Symbol sym, Args... args) {
-    return new TermBuilder(sym, args...);
-  }
-
-  Eclass* addToEgraph(Egraph &e) const {
-    Term tm;
-    tm.head = sym;
-    for(int i = 0; i < this->args.size(); ++i) {
-      tm.args.push_back(this->args[i]->addToEgraph(e));
-    }
-    return e.findOrAddTerm(tm);
-  }
-};
 
 static const int CST = 0;
 static const int ADD = 100;
@@ -392,16 +397,16 @@ static const int X = -42; // variable
 void test() {
   Egraph g;
   cout << "adding same constants\n";
-  Eclass *cls1 = TermBuilder::mk(CST + 10)->addToEgraph(g);
-  Eclass *cls2 = TermBuilder::mk(CST + 10)->addToEgraph(g);
+  Eclass *cls1 = Term::mk(CST + 10)->addToEgraph(g);
+  Eclass *cls2 = Term::mk(CST + 10)->addToEgraph(g);
     assert(cls1 == cls2);
 }
 
 void test2() {
   Egraph g;
   cout << "adding different constants\n";
-  Eclass *cls1 = TermBuilder::mk(CST + 10)->addToEgraph(g);
-  Eclass *cls2 = TermBuilder::mk(CST + 20)->addToEgraph(g);
+  Eclass *cls1 = Term::mk(CST + 10)->addToEgraph(g);
+  Eclass *cls2 = Term::mk(CST + 20)->addToEgraph(g);
   assert(cls1 != cls2);
 }
 
@@ -409,8 +414,8 @@ void test2() {
 void test3() {
   Egraph g;
   cout << "adding different constants, then uniting them\n";
-  Eclass *cls1 = TermBuilder::mk(CST + 10)->addToEgraph(g);
-  Eclass *cls2 = TermBuilder::mk(CST + 20)->addToEgraph(g);
+  Eclass *cls1 = Term::mk(CST + 10)->addToEgraph(g);
+  Eclass *cls2 = Term::mk(CST + 20)->addToEgraph(g);
   assert(cls1 != cls2);
   g.unite(cls1, cls2);
   cls1 = g.canonicalizeClass(cls1);
@@ -422,9 +427,9 @@ void test3() {
 void test4() {
   Egraph g;
   cout << "adding three constants, then uniting unrelated ones \n";
-  Eclass *cls1 = TermBuilder::mk(CST + 10)->addToEgraph(g);
-  Eclass *cls2 = TermBuilder::mk(CST + 20)->addToEgraph(g);
-  Eclass *cls3 = TermBuilder::mk(CST + 30)->addToEgraph(g);
+  Eclass *cls1 = Term::mk(CST + 10)->addToEgraph(g);
+  Eclass *cls2 = Term::mk(CST + 20)->addToEgraph(g);
+  Eclass *cls3 = Term::mk(CST + 30)->addToEgraph(g);
   assert(cls1 != cls2);
   assert(cls2 != cls3);
   assert(cls1 != cls3);
@@ -443,19 +448,19 @@ void test5() {
 
 
   Eclass *cls1 =
-    TermBuilder::mk(NEG, TermBuilder::mk(CST + 10))->addToEgraph(g);
+    Term::mk(NEG, Term::mk(CST + 10))->addToEgraph(g);
   Eclass *cls2 =
-    TermBuilder::mk(NEG, TermBuilder::mk(CST + 20))->addToEgraph(g);
+    Term::mk(NEG, Term::mk(CST + 20))->addToEgraph(g);
   Eclass *cls3 =
-    TermBuilder::mk(NEG, TermBuilder::mk(CST + 30))->addToEgraph(g);
+    Term::mk(NEG, Term::mk(CST + 30))->addToEgraph(g);
 
   assert(cls1 != cls2);
   assert(cls1 != cls3);
   assert(cls2 != cls3);
 
-  Eclass *cst1 = TermBuilder::mk(CST + 10)->addToEgraph(g);
-  Eclass *cst2 = TermBuilder::mk(CST + 20)->addToEgraph(g);
-  Eclass *cst3 = TermBuilder::mk(CST + 30)->addToEgraph(g);
+  Eclass *cst1 = Term::mk(CST + 10)->addToEgraph(g);
+  Eclass *cst2 = Term::mk(CST + 20)->addToEgraph(g);
+  Eclass *cst3 = Term::mk(CST + 30)->addToEgraph(g);
   assert(cst1 != cst2);
   assert(cst2 != cst3);
   assert(cst1 != cst3);
@@ -483,19 +488,19 @@ void test6() {
 
 
   Eclass *cls1 = // - 10
-    TermBuilder::mk(NEG, TermBuilder::mk(CST + 10))->addToEgraph(g);
+    Term::mk(NEG, Term::mk(CST + 10))->addToEgraph(g);
   Eclass *cls2 = // - 20
-    TermBuilder::mk(NEG, TermBuilder::mk(CST + 20))->addToEgraph(g);
+    Term::mk(NEG, Term::mk(CST + 20))->addToEgraph(g);
   Eclass *cls3 =
-    TermBuilder::mk(NEG, TermBuilder::mk(CST + 30))->addToEgraph(g);
+    Term::mk(NEG, Term::mk(CST + 30))->addToEgraph(g);
 
   assert(cls1 != cls2);
   assert(cls1 != cls3);
   assert(cls2 != cls3);
 
-  Eclass *cst1 = TermBuilder::mk(CST + 10)->addToEgraph(g);
-  Eclass *cst2 = TermBuilder::mk(CST + 20)->addToEgraph(g);
-  Eclass *cst3 = TermBuilder::mk(CST + 30)->addToEgraph(g);
+  Eclass *cst1 = Term::mk(CST + 10)->addToEgraph(g);
+  Eclass *cst2 = Term::mk(CST + 20)->addToEgraph(g);
+  Eclass *cst3 = Term::mk(CST + 30)->addToEgraph(g);
   assert(cst1 != cst2);
   assert(cst2 != cst3);
   assert(cst1 != cst3);
@@ -521,17 +526,17 @@ void test6() {
 // implies f^3 = f7
 void test7() {
   Egraph g;
-  Eclass *f = TermBuilder::mk(CST + 10)->addToEgraph(g);
+  Eclass *f = Term::mk(CST + 10)->addToEgraph(g);
   vector<Eclass *> fs;
-  fs.push_back(TermBuilder::mk(CST + 0)->addToEgraph(g)); // id
+  fs.push_back(Term::mk(CST + 0)->addToEgraph(g)); // id
   fs.push_back(f); // f
 
   // add upto f^10.
   for(int i = 2; i <= 20; ++i) {
-    Term tm;
+    HashConsTerm tm;
     tm.head = CST + 10;
     tm.args = { fs[i-1] } ;
-    fs.push_back(g.findOrAddTerm(tm));
+    fs.push_back(g.findOrAddHashConsTerm(tm));
   }
 
   g.unite(fs[2], fs[6]);
@@ -553,10 +558,10 @@ void test8() {
 
 
   Eclass *cls1 = // - 10
-    TermBuilder::mk(NEG, TermBuilder::mk(CST + 10))->addToEgraph(g);
+    Term::mk(NEG, Term::mk(CST + 10))->addToEgraph(g);
 
-  Eclass *cst1 = TermBuilder::mk(CST + 10)->addToEgraph(g);
-  Eclass *cst2 = TermBuilder::mk(CST + 20)->addToEgraph(g);
+  Eclass *cst1 = Term::mk(CST + 10)->addToEgraph(g);
+  Eclass *cst2 = Term::mk(CST + 20)->addToEgraph(g);
   assert(cst1 != cst2);
 
   g.unite(cst1, cst2); // 10 = 20
@@ -565,7 +570,7 @@ void test8() {
 
   cls1 = g.canonicalizeClass(cls1);
   Eclass *cls2 = // - 20
-    TermBuilder::mk(NEG, TermBuilder::mk(CST + 20))->addToEgraph(g);
+    Term::mk(NEG, Term::mk(CST + 20))->addToEgraph(g);
 
   assert(cls1 == cls2); // - 10 == - 20
 
@@ -578,10 +583,10 @@ void test9() {
 
 
   Eclass *cls1 = // - 10
-    TermBuilder::mk(NEG, TermBuilder::mk(CST + 10))->addToEgraph(g);
+    Term::mk(NEG, Term::mk(CST + 10))->addToEgraph(g);
 
-  Eclass *cst1 = TermBuilder::mk(CST + 10)->addToEgraph(g);
-  Eclass *cst2 = TermBuilder::mk(CST + 20)->addToEgraph(g);
+  Eclass *cst1 = Term::mk(CST + 10)->addToEgraph(g);
+  Eclass *cst2 = Term::mk(CST + 20)->addToEgraph(g);
   assert(cst1 != cst2);
 
   g.unite(cst2, cst1); // 20 = 10
@@ -590,7 +595,7 @@ void test9() {
 
   cls1 = g.canonicalizeClass(cls1);
   Eclass *cls2 = // - 20
-    TermBuilder::mk(NEG, TermBuilder::mk(CST + 20))->addToEgraph(g);
+    Term::mk(NEG, Term::mk(CST + 20))->addToEgraph(g);
 
   assert(cls1 == cls2); // - 10 == - 20
 }
@@ -599,12 +604,14 @@ void test9() {
 // extract out all values from an e-class
 void test10() {
   Egraph g;
-  Eclass *cls1 = TermBuilder::mk(CST + 1)->addToEgraph(g);
-  Eclass *cls2 = TermBuilder::mk(CST + 2)->addToEgraph(g);
-  Eclass *cls3 = TermBuilder::mk(CST + 3)->addToEgraph(g);
+  Eclass *cls1 = Term::mk(CST + 1)->addToEgraph(g);
+  Eclass *cls2 = Term::mk(CST + 2)->addToEgraph(g);
+  Eclass *cls3 = Term::mk(CST + 3)->addToEgraph(g);
 
   Pattern *p = new PatternVar(&g, X + 1);
   vector<ExtractedTerm> ts = p->run();
+  // std::set<ExtractedTerm> tsset;
+  // tsset.insert(tsset.end(), ts.begin(), ts.end());
   assert(ts.size() == 3); // we should get the three terms.
 }
 
