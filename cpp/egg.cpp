@@ -286,6 +286,12 @@ struct Pattern {
   Pattern (Egraph *graph) : graph(graph) {};
   virtual optional<HashConsTerm> subst(PatternCtx pctx) = 0;
   virtual void unify(HashConsTerm tm, PatternCtx pctx, Pattern::Callback cb) = 0;
+  virtual void unify(Eclass *ecls, PatternCtx pctx, Pattern::Callback cb) {
+    for(HashConsTerm tm : ecls->members) {
+      unify(tm, pctx, cb);
+    }
+  }
+
 };
 
 struct PatternVar : public Pattern {
@@ -308,8 +314,6 @@ struct PatternVar : public Pattern {
       cb(pctx);
      }
   }
-
-
 };
 
 struct PatternTerm : public Pattern {
@@ -574,11 +578,20 @@ void test10() {
   Eclass *cls2 = Term::mk(CST + 2)->addToEgraph(g);
   Eclass *cls3 = Term::mk(CST + 3)->addToEgraph(g);
 
+  g.unite(cls1, cls2);
+  g.unite(cls2, cls3);
+
   Pattern *p = new PatternVar(&g, X + 1);
-  // vector<ExtractedClass> ts = p->run();
-  // std::set<ExtractedClass> tsset;
-  // tsset.insert(tsset.end(), ts.begin(), ts.end());
-  // assert(ts.size() == 3); // we should get the three terms.
+  set<HashConsTerm> tms;
+  p->unify(cls1, {}, [&](PatternCtx ctx) {
+    optional<HashConsTerm> otm = p->subst(ctx);
+    if (otm) {
+      tms.insert(*otm);
+    }
+  });
+
+
+  assert(tms.size() == 3);
 }
 
 
