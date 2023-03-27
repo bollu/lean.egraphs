@@ -5,6 +5,7 @@
 #include <initializer_list>
 #include "assert.h"
 #include <queue>
+#include <functional>
 #include <set>
 
 const char* __asan_default_options() { return "detect_leaks=0"; }
@@ -277,8 +278,9 @@ struct ExtractedClass {
 
 struct Pattern {
   Egraph *graph;
+  using Callback = std::function<void(ExtractedClass)>;
   Pattern (Egraph *graph) : graph(graph) {};
-  virtual std::vector<ExtractedClass> unify(Eclass *cls, PatternCtx pctx) = 0;
+  virtual void unify(Eclass *cls, PatternCtx pctx, Pattern::Callback cb) = 0;
 
   // try to unify on all terms in the egraph.
   // vector<ExtractedClass> run() {
@@ -300,16 +302,17 @@ struct PatternVar : public Pattern {
   VarId id;
   PatternVar(Egraph *graph, VarId id) :
     Pattern(graph), id(id) {}
+  using Callback = std::function<void(ExtractedClass)>;
 
-  vector<ExtractedClass> unify(Eclass *cls, PatternCtx pctx) {
+  void unify(Eclass *cls, PatternCtx pctx, Callback cb) {
     auto it = pctx.find(id);
     if (it == pctx.end()) {
          pctx[this->id] = cls;
-         return {ExtractedClass(pctx, cls)};
+         cb(ExtractedClass(pctx, cls));
     } else if (it->second == cls) {
-      return {ExtractedClass(pctx, cls)};
+      cb(ExtractedClass(pctx, cls));
     }
-    return {}; // no match.
+    return; // no match
   }
 };
 
@@ -338,15 +341,13 @@ struct PatternTerm : public Pattern {
     Pattern(graph), head(head), args(args) {};
 
 
-  vector<ExtractedClass> unify(Eclass *cls, PatternCtx pctx) {
-     vector<ExtractedClass> out;
+  void unify(Eclass *cls, PatternCtx pctx, Callback cb) {
      for(HashConsTerm htm : cls->members) {
-       unify_(htm, pctx, out);
+       unify_(htm, pctx, cb);
      }
-     return out;
   }
 private:
-  void unify_(HashConsTerm t, PatternCtx pctx, vector<ExtractedClass> &out) {
+  void unify_(HashConsTerm t, PatternCtx pctx, Callback cb) {
 
     if (t.head != head) { return; }
     assert(t.head == head);
@@ -356,21 +357,19 @@ private:
 
     if (t.args.size() == 0) {
       Eclass *tcls = graph->getTermClass(t);
-      out.push_back(ExtractedClass(pctx, tcls));
+      cb(ExtractedClass(pctx, tcls));
     }
 
     assert(t.args.size() > 0);
     vector<Foo> foos = {Foo(pctx)};
-
     for(int i = 0; i < t.args.size(); ++i) {
       vector<Foo> newfoos;
       for(Foo foo : foos) {
-        vector<ExtractedClass> ecs = this->args[i]->unify(t.args[i], foo.pctx);
-        for (ExtractedClass ec : ecs) {
+        this->args[i]->unify(t.args[i], foo.pctx, [&](ExtractedClass ec) {
           newfoos.push_back(foo.appendExtractedClass(ec));
-        }
-      foos = newfoos;
+        });
       }
+      foos = newfoos;
     }
 
     for(Foo foo : foos) {
@@ -379,7 +378,7 @@ private:
       tm.head = this->head;
       tm.args = foo.clss;
       Eclass *tmcls = graph->getTermClass(tm);
-      out.push_back(ExtractedClass(foo.pctx, tmcls));
+      cb(ExtractedClass(foo.pctx, tmcls));
     }
   }
 };
