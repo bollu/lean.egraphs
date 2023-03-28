@@ -23,7 +23,7 @@ struct HashConsTerm {
   Symbol sym;
   vector<Eclass *> args;
 
-  bool operator == (const HashConsTerm &other ) const {
+  bool operator == (const HashConsTerm &other) const {
     if (sym != other.sym) { return false; }
     if (args.size() != other.args.size()) { return false; }
     for(int i = 0; i < args.size(); ++i) {
@@ -339,7 +339,7 @@ struct PatternTerm : public Pattern {
   virtual void unify(HashConsTerm tm, PatternCtx pctx, Pattern::Callback cb) {
     if (tm.sym != sym) { return; }
     if (tm.args.size() != args.size()) { return; }
-  
+
     vector<PatternCtx> states;
     states.push_back(pctx);
 
@@ -359,6 +359,42 @@ struct PatternTerm : public Pattern {
   }
 };
 
+void patternGetFreeVars(Pattern *p, std::set<Pattern *> &out) {
+    assert(p);
+    if (auto pt = dynamic_cast<PatternTerm *>(p)) {
+        for(Pattern *p : pt->args) {
+            patternGetFreeVars(pt, out);
+        }
+    } else {
+        auto pv = dynamic_cast<PatternVar *>(p);
+        out.insert(pv);
+    }
+};
+
+std::set<Pattern *> patternGetFreeVars(Pattern *p) {
+    std::set<Pattern *> out;
+    patternGetFreeVars(p, out);
+    return out;
+}
+
+struct Rewrite {
+    Pattern *lhs;
+    Pattern *rhs;
+
+    Rewrite(Pattern *lhs, Pattern *rhs) : lhs(lhs), rhs(rhs) {
+        // TODO: check that free vars(lhs) subset free vars(rhs)
+    }
+
+    // try to apply the rewrite, converting the lhs into the rhs.
+    optional<HashConsTerm> apply(HashConsTerm ht) {
+        optional<PatternCtx> opctx;
+        this->lhs->unify(ht, {}, [&](PatternCtx pctx) {
+            opctx = pctx;
+        });
+        if (opctx) { return rhs->subst(*opctx); }
+        return {};
+    }
+};
 
 static const int CST = 0;
 static const int ADD = 100;
