@@ -19,6 +19,8 @@ struct HashConsTerm; // (sym symbol, +, -, plus arguments which )are equiv. clas
 struct Pattern;
 struct Term;
 
+using EclassPtr = int;
+
 struct HashConsTerm {
   Symbol sym;
   vector<Eclass *> args;
@@ -96,6 +98,8 @@ struct Eclass {
     }
     printf(" }");
   }
+
+  void assertInvariants(Egraph *g);
 private:
   Eclass() {};
 };
@@ -108,6 +112,20 @@ struct Egraph {
   // *canonicalized terms* to the equivalence classes they belong to.
   map<HashConsTerm, Eclass *> term2class;
 
+  void assertTerm2ClassInvariant() {
+    for(auto it : term2class) {
+      // key should be canonical.
+      HashConsTerm tm2 = canonicalizeHashConsTerm_(it.first);
+      assert(tm2 == it.first);
+
+      it.second.assertInvariants(&g);
+    }
+  }
+
+  void assertInvariants() {
+    assertTerm2ClassInvariant();
+  }
+
   Eclass *canonicalizeClass(Eclass *cls) const {
     assert(cls);
     if (cls->ufparent == cls) { return cls; }
@@ -115,7 +133,7 @@ struct Egraph {
     return cls->ufparent;
   }
 
-  HashConsTerm canonicalizeHashConsTerm (HashConsTerm tm) const {
+  HashConsTerm canonicalizeHashConsTerm_(HashConsTerm tm) {
     for (int i = 0; i < tm.args.size(); ++i) {
       tm.args[i] = canonicalizeClass(tm.args[i]);
       assert(tm.args[i] != nullptr);
@@ -123,20 +141,17 @@ struct Egraph {
     return tm;
   }
 
-  Eclass *getTermClass (HashConsTerm tm) const {
-    tm = canonicalizeHashConsTerm(tm);
-    auto it = term2class.find(tm);
-    if (it == term2class.end()) {
-      assert(false && "expected to have term in e-graph.");
-    }
-    return it->second;
-  }
 
+  
   Eclass* findOrAddHashConsTerm (HashConsTerm tm) {
-    tm = canonicalizeHashConsTerm(tm);
+    // canonicalize tm
+    tm = canonicalizeHashConsTerm_(tm);
+    
+    // find
     Eclass *cls = nullptr;
     auto it = term2class.find(tm);
     if (it == term2class.end()) {
+        // add
         cls = Eclass::singleton(tm);
       term2class[tm] = cls;
     } else {
@@ -202,6 +217,7 @@ struct Egraph {
     return parent;
   };
 
+
   void rebuild(Eclass *cls) {
     printf("rebuilding eclass: "); cls->print(); printf("\n");
     // invariant: the Eterm, Eclass must be the latest Eclass.
@@ -210,27 +226,28 @@ struct Egraph {
     vector<std::pair<HashConsTerm, Eclass *>> parentTerms = cls->parentTerms;
     printf("cls size: %d\n", cls->parentTerms.size());
     for(std::pair<HashConsTerm, Eclass *> tmcls : parentTerms) {
-      // TODO: why can't this give us a radically different term, which
-      // DOES NOT in fact exist in our database of terms?
-      // tmcls.first = canonicalizeHashConsTerm(tmcls.first);
-      printf("xxx\n");
-      // this invalidates the iterator of 'cls', since this pushes into 'cls'.
       Eclass *newclass = findOrAddHashConsTerm(tmcls.first);
-      printf("yyy\n");
       assert(newclass != nullptr); // TODO: why MUST this exist?
-      if (newclass == tmcls.second) { continue; }
-      // canonical version of term has changed, time to unite!
-      printf("zzz\n");
+      if (newclass == tmcls.second) { continue; } // already canonical.
+      // not canonical, unite with new version.
       tmcls.second = unite(newclass, tmcls.second);
-      printf("www\n");
+      // update table. TODO: why is table up to date at this point?
+      term2class.erase(tmcls.first);
+      tmcls.first = canonicalizeHashConsTerm_(tmcls.first);
       term2class[tmcls.first] = tmcls.second;
-      printf("aaa\n");
       canonParents.push_back(tmcls);
     }
+    // prevent iterator invalidation.
     cls->parentTerms = canonParents;
 
   }
 };
+
+
+void Eclass::assertInvariants(Egraph *g) {
+ 
+
+}
 
 // === terms ===
 
@@ -324,6 +341,16 @@ struct PatternTerm : public Pattern {
     Symbol sym, vector<Pattern *> args) :
     Pattern(graph), sym(sym), args(args) {};
 
+  static PatternTerm *mk(Egraph *graph, Symbol sym, Pattern *arg1) {
+      vector<Pattern *> args = {arg1};
+      return new PatternTerm(graph, sym, args);
+  }
+
+  static PatternTerm *mk(Egraph *graph, Symbol sym, Pattern *arg1, Pattern *arg2) {
+      vector<Pattern *> args = {arg1, arg2};
+      return new PatternTerm(graph, sym, args);
+  }
+
   optional<HashConsTerm> subst(PatternCtx pctx) {
     HashConsTerm tm;
     tm.sym = sym;
@@ -352,7 +379,7 @@ struct PatternTerm : public Pattern {
            });
         }
       }
-      newstates = states;
+      states = newstates;
     }
 
     for(PatternCtx pctx : states) { cb(pctx); }
@@ -404,14 +431,17 @@ void test() {
   Egraph g;
   cout << "adding same constants\n";
   Eclass *cls1 = Term::mk(CST + 10)->addToEgraph(g);
+  g.assertInvariants();
   Eclass *cls2 = Term::mk(CST + 10)->addToEgraph(g);
-    assert(cls1 == cls2);
+  g.assertInvariants();
+  assert(cls1 == cls2);
 }
 
 void test2() {
   Egraph g;
   cout << "adding different constants\n";
   Eclass *cls1 = Term::mk(CST + 10)->addToEgraph(g);
+  g.assertInvariants();
   Eclass *cls2 = Term::mk(CST + 20)->addToEgraph(g);
   assert(cls1 != cls2);
 }
@@ -421,10 +451,13 @@ void test3() {
   Egraph g;
   cout << "adding different constants, then uniting them\n";
   Eclass *cls1 = Term::mk(CST + 10)->addToEgraph(g);
+  g.assertInvariants();
   Eclass *cls2 = Term::mk(CST + 20)->addToEgraph(g);
+  g.assertInvariants();
   assert(cls1 != cls2);
   g.unite(cls1, cls2);
   cls1 = g.canonicalizeClass(cls1);
+  g.assertInvariants();
   cls2 = g.canonicalizeClass(cls2);
   assert(cls1 == cls2);
 }
@@ -434,15 +467,22 @@ void test4() {
   Egraph g;
   cout << "adding three constants, then uniting unrelated ones \n";
   Eclass *cls1 = Term::mk(CST + 10)->addToEgraph(g);
+  g.assertInvariants();
   Eclass *cls2 = Term::mk(CST + 20)->addToEgraph(g);
+  g.assertInvariants();
   Eclass *cls3 = Term::mk(CST + 30)->addToEgraph(g);
+  g.assertInvariants();
   assert(cls1 != cls2);
   assert(cls2 != cls3);
   assert(cls1 != cls3);
   g.unite(cls1, cls3);
+  g.assertInvariants();
   cls1 = g.canonicalizeClass(cls1);
+  g.assertInvariants();
   cls2 = g.canonicalizeClass(cls2);
+  g.assertInvariants();
   cls3 = g.canonicalizeClass(cls3);
+  g.assertInvariants();
   assert(cls1 == cls3);
   assert(cls1 != cls2);
 }
@@ -472,12 +512,14 @@ void test5() {
   assert(cst1 != cst3);
 
   g.unite(cst1, cst2);
-
+  g.assertInvariants();
+  
   cst1 = g.canonicalizeClass(cst1);
   cst2 = g.canonicalizeClass(cst2);
   cst3 = g.canonicalizeClass(cst3);
   assert(cst1 == cst2);
   assert(cst1 != cst3);
+  g.assertInvariants();
 
   cls1 = g.canonicalizeClass(cls1);
   cls2 = g.canonicalizeClass(cls2);
@@ -512,6 +554,7 @@ void test6() {
   assert(cst1 != cst3);
 
   g.unite(cst1, cst2); // 10 = 20
+  g.assertInvariants();
   g.unite(cst1, cst3);
 
   cst1 = g.canonicalizeClass(cst1);
@@ -535,6 +578,7 @@ void test7() {
   Eclass *f = Term::mk(CST + 10)->addToEgraph(g);
   vector<Eclass *> fs;
   fs.push_back(Term::mk(CST + 0)->addToEgraph(g)); // id
+  g.assertInvariants();    
   fs.push_back(f); // f
 
   // add upto f^10.
@@ -543,9 +587,11 @@ void test7() {
     tm.sym = CST + 10;
     tm.args = { fs[i-1] } ;
     fs.push_back(g.findOrAddHashConsTerm(tm));
+    g.assertInvariants();
   }
 
   g.unite(fs[2], fs[6]);
+  g.assertInvariants();
 
   for(Eclass *& cls : fs) {
     cls = g.canonicalizeClass(cls);
@@ -607,12 +653,13 @@ void test9() {
 }
 
 
-// extract out all values from an e-class
 void test10() {
+// extract out all values from an e-class
   Egraph g;
   Eclass *cls1 = Term::mk(CST + 1)->addToEgraph(g);
   Eclass *cls2 = Term::mk(CST + 2)->addToEgraph(g);
   Eclass *cls3 = Term::mk(CST + 3)->addToEgraph(g);
+  Eclass *cls4 = Term::mk(CST + 4)->addToEgraph(g);
 
   g.unite(cls1, cls2);
   g.unite(cls2, cls3);
@@ -626,8 +673,66 @@ void test10() {
     }
   });
 
-
+  // check that all terms were extracted.
   assert(tms.size() == 3);
+}
+
+void test11() {
+  // check that when ({1, 2} + {1, 2}) is in the same eclass, we still
+  // pick out only (1 + 1, 2 + 2) if the patern demands it.
+  Egraph g;
+  auto cst1 = Term::mk(CST + 1);
+  auto cst2 = Term::mk(CST + 2);
+  Eclass *cls1 = cst1->addToEgraph(g);
+  Eclass *cls2 = cst2->addToEgraph(g);
+  Eclass *add11 = Term::mk(ADD, cst1, cst1)->addToEgraph(g);
+  Eclass *add12 = Term::mk(ADD, cst1, cst2)->addToEgraph(g);
+  Eclass *add21 = Term::mk(ADD, cst2, cst1)->addToEgraph(g);
+  Eclass *add22 = Term::mk(ADD, cst2, cst1)->addToEgraph(g);
+
+  g.unite(add11, add12);
+  g.unite(add12, add21);
+  g.unite(add21, add22);
+
+  Pattern *px = new PatternVar(&g, X + 1);
+  Pattern *paddxx = PatternTerm::mk(&g, ADD, px, px);
+
+  paddxx->unify(add11, {}, [&](PatternCtx ctx) {
+        cerr << "ctx: [";
+        for(auto it  : ctx) {
+          cerr << it.first << "|->" << it.second.sym << " ";
+        }
+        cerr << "]\n";
+        auto it = ctx.find(X + 1);
+        assert(it != ctx.end());
+        optional<HashConsTerm> ot = paddxx->subst(ctx);
+        assert(ot && "unable to substitute");
+        HashConsTerm t = *ot;
+
+        assert(t.sym == ADD);
+        assert(t.args.size() == 2);
+        assert(t.args[0] == t.args[1]);
+  });
+
+}
+
+void test12() {
+  //test that unify() actually updates the term table.
+  Egraph g;
+  auto cst1 = Term::mk(CST + 1);
+  auto cst2 = Term::mk(CST + 2);
+  Eclass *cls1 = cst1->addToEgraph(g);
+  Eclass *cls2 = cst2->addToEgraph(g);
+  Eclass *canon = g.unite(cls1, cls2);
+
+  // this should succeed, since table should have cst1 -> canon
+  Eclass *cls11 = cst1->addToEgraph(g);
+  assert(canon == cls11);
+
+  // this should succeed, since table should have cst2 -> cst1 -> canon
+  Eclass *cls22 = cst2->addToEgraph(g);
+  assert(canon == cls22);
+  
 }
 
 
@@ -642,4 +747,6 @@ int main() {
   test8();
   test9();
   test10();
+  test11();
+  test12();
 }
