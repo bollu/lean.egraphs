@@ -18,6 +18,7 @@ struct Eclass; // equiv class. of terms.
 struct HashConsTerm; // (sym symbol, +, -, plus arguments which )are equiv. classes)
 struct Pattern;
 struct Term;
+struct Egraph;
 
 using EclassPtr = int;
 
@@ -106,10 +107,11 @@ private:
 
 
 
-
+// data structure invariant: all return values are canonical
 struct Egraph {
   // the ONLY global data tracked is
   // *canonicalized terms* to the equivalence classes they belong to.
+  // NOTE: equiv class are NOT canonical, might have to lookup parent.
   map<HashConsTerm, Eclass *> term2class;
 
   void assertTerm2ClassInvariant() {
@@ -117,8 +119,10 @@ struct Egraph {
       // key should be canonical.
       HashConsTerm tm2 = canonicalizeHashConsTerm_(it.first);
       assert(tm2 == it.first);
+      Eclass *eclass2 = canonicalizeClass(it.second);
+      // assert(eclass2 == it.second);
 
-      it.second.assertInvariants(&g);
+      it.second->assertInvariants(this);
     }
   }
 
@@ -151,14 +155,14 @@ struct Egraph {
     Eclass *cls = nullptr;
     auto it = term2class.find(tm);
     if (it == term2class.end()) {
-        // add
-        cls = Eclass::singleton(tm);
+      // add
+      cls = Eclass::singleton(tm);
       term2class[tm] = cls;
     } else {
-      cls = it->second;
+      cls = canonicalizeClass(it->second);
     }
-
     assert(cls);
+    assert(cls->ufparent == cls);
     for(Eclass *argcls : tm.args) {
       argcls->parentTerms.push_back({tm, cls});
     }
@@ -180,9 +184,9 @@ struct Egraph {
     a = canonicalizeClass(a);
     b = canonicalizeClass(b);
 
-    printf("uniting: ");
-    printf("\n  - "); a->print();
-    printf("\n  - "); b->print(); printf("\n");
+    // printf("uniting: ");
+    // printf("\n  - "); a->print();
+    // printf("\n  - "); b->print(); printf("\n");
     assert(a);
     assert(b);
 
@@ -208,12 +212,16 @@ struct Egraph {
     for (HashConsTerm tm : child->members) {
       parent->members.push_back(tm);
     }
+    child->members = {}; // stolen.
 
     for (std::pair<HashConsTerm, Eclass*> tm : child->parentTerms) {
       parent->parentTerms.push_back(tm);
     }
+    // need to remove child from table?
+    child->parentTerms = {}; // stolen.
 
     rebuild(parent);
+    assert(parent->ufparent == parent);
     return parent;
   };
 
@@ -227,9 +235,7 @@ struct Egraph {
     printf("cls size: %d\n", cls->parentTerms.size());
     for(std::pair<HashConsTerm, Eclass *> tmcls : parentTerms) {
       Eclass *newclass = findOrAddHashConsTerm(tmcls.first);
-      assert(newclass != nullptr); // TODO: why MUST this exist?
-      if (newclass == tmcls.second) { continue; } // already canonical.
-      // not canonical, unite with new version.
+      // unite with new version.
       tmcls.second = unite(newclass, tmcls.second);
       // update table. TODO: why is table up to date at this point?
       term2class.erase(tmcls.first);
@@ -239,13 +245,22 @@ struct Egraph {
     }
     // prevent iterator invalidation.
     cls->parentTerms = canonParents;
-
   }
 };
 
 
 void Eclass::assertInvariants(Egraph *g) {
- 
+  // vector<pair<HashConsTerm, Eclass*>> parentTerms;
+  // 1) data for union-find.[3]
+  // Eclass *ufparent; // parent in the union-find ttee  4
+  if (this->ufparent != this) {
+    assert(members.size() == 0);
+    assert(parentTerms.size() == 0);
+  }
+  for(auto it : parentTerms) {
+    HashConsTerm ht2 = g->canonicalizeHashConsTerm_(it.first);
+    assert(it.first == ht2);
+  }
 
 }
 
@@ -724,13 +739,16 @@ void test12() {
   Eclass *cls1 = cst1->addToEgraph(g);
   Eclass *cls2 = cst2->addToEgraph(g);
   Eclass *canon = g.unite(cls1, cls2);
+  g.assertInvariants();
 
   // this should succeed, since table should have cst1 -> canon
   Eclass *cls11 = cst1->addToEgraph(g);
+  g.assertInvariants();
   assert(canon == cls11);
 
   // this should succeed, since table should have cst2 -> cst1 -> canon
   Eclass *cls22 = cst2->addToEgraph(g);
+  g.assertInvariants();
   assert(canon == cls22);
   
 }
